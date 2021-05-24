@@ -8,19 +8,29 @@ import torch.nn.functional as F
 from multi_model.utils.pointnet2 import PointNet2TwoStage, PointNet2Refine
 
 class GripperRegionNetwork(nn.Module):
+    """
+    关于GraspRegion的网络部分，通过标志位可以选择性地实现对RefineNet的集成
+    """
     def __init__(self, training, group_num, gripper_num, grasp_score_threshold, radius, reg_channel):
         super(GripperRegionNetwork, self).__init__()
+        #是否
         self.group_number = group_num
+        #枚举anchors模板，这个只是把多种角度显式地表示出来，还没有和抓取中心点结合起来
         self.templates = _enumerate_templates()
+        #计算一下所有anchors的数量
         self.anchor_number = self.templates.shape[1]*self.templates.shape[2]
+        #
         self.gripper_number = gripper_num
         self.grasp_score_thre = grasp_score_threshold
         self.is_training_refine = training
         self.radius = radius
         self.reg_channel = reg_channel
 
+        #构建一个抽取区域特征的网络
         self.extrat_feature_region = PointNet2TwoStage(num_points=group_num, input_chann=6, k_cls=self.anchor_number,\
                                             k_reg=self.reg_channel*self.anchor_number, k_reg_theta=self.anchor_number)
+
+        #构建的一个
         self.extrat_feature_refine = PointNet2Refine(num_points=gripper_num, input_chann=6, k_cls=2, k_reg=self.reg_channel)
 
         self.criterion_cos = nn.CosineEmbeddingLoss(reduction='mean')
@@ -29,13 +39,15 @@ class GripperRegionNetwork(nn.Module):
 
     def _enumerate_anchors(self, centers):
         '''
+          用于枚举固定的anchors，在这里，将锚点和模板匹配在一起
           Enumerate anchors.
           Input:
-            centers: [B*num of centers, 3] -> x, y, z
+            centers: [B*num of centers, 3] -> x, y, z  输入是Batch的所有中心点的xyz坐标
             self.templates :[1,8,1,4] -> 8:rxryrz_num 1:theta_num 4:rxryrztheta
           Return:
             t_anchors: [B*num of centers, 8, 7] -> the number of anchors is 8
                                                      7 means (x, y, z, rx, ry, rz, theta)
+                                                     每个中心点将固定有8个模板，每个模板都是7维的
         '''
         if centers.cuda:
             self.templates = self.templates.cuda()
@@ -377,8 +389,10 @@ class GripperRegionNetwork(nn.Module):
         
         cuda = pc.is_cuda
         final_grasp, final_grasp_stage1 = torch.Tensor(), torch.Tensor()
+        #设置两个loss
         loss_tuple, loss_tuple_stage2 = (None, None), (None, None)
 
+        #在这里，获取到每个锚点的多个anchors
         anchors = self._enumerate_anchors(center_pc[:,:,:3].view(-1,3).float())  ## [B*center_num, 8, 7]
         anchor_number = anchors.shape[1]
 
@@ -405,6 +419,7 @@ class GripperRegionNetwork(nn.Module):
         # # center_feature:[B*N_C, N_G, feature_len]      
         
         # x_cls:[B*N_C, num_anchor]  x_reg:[B*N_C, num_anchor, 8] 
+        #前向
         x_cls, x_reg, mp_center_feature = self.extrat_feature_region(center_feature.permute(0,2,1), None)
         
         # next_grasp: [len(true_mask), 8], next_gt: [len(true_mask), 8]
@@ -551,6 +566,7 @@ def get_gripper_region_transform(group_points, group_index, grasp, region_num, g
 
 def _enumerate_templates():
     '''
+      枚举所有的抓取anchors，对于每个抓取点，要生成120个anchors
       Enumerate all grasp anchors:
       For one score center, we generate 120 anchors.
 

@@ -14,41 +14,50 @@ def get_grasp_allobj(pc, predict_score, params, data_paths, use_theta=True):
     '''
       randomly sample grasp center in positive points set (all obj), 
       and get grasps centered at these centers.
+      实现的功能就是按照分数，从原始点云中，通过PFS算法（感觉实际上没有用这个），抽取出k个抓取中心
+
       Input:
-        pc             :[B,N,6]  input points 
-        predict_score  :[B,N]
+        pc             :[B,N,6]  input points  原始点云，咋是6维度的？（答：因为是xyzrgb，带有颜色（感觉没必要颜色））
+        predict_score  :[B,N]  每个点的预测分数
         params         :list [center_num(int), score_thre(float), group_num(int), r_time_group(float), group_num_more(int), \
                               r_time_group_more(float), width(float), height(float), depth(float)]
         data_paths     :list
       Output:
-        center_pc           :[B, center_num, 6]
-        center_pc_index     :[B, center_num] index of selected center in sampled points
-        pc_group_index      :[B, center_num, group_num]
-        pc_group_more_index :[B, center_num, group_num_more]
-        pc_group            :[B, center_num, group_num, 6]
-        pc_group_more       :[B, center_num, group_num_more, 6]
+        center_pc           :[B, center_num, 6] 输出的是抓取中心的坐标&颜色
+        center_pc_index     :[B, center_num] index of selected center in sampled points 这些抓取中心点的索引
+        pc_group            :[B, center_num, group_num, 6]  这些包围球内部的点的坐标
+        pc_group_index      :[B, center_num, group_num]  这些抓取中心点形成的保卫球内点的索引
+        pc_group_more       :[B, center_num, group_num_more, 6]  更多一点的抓取的
+        pc_group_more_index :[B, center_num, group_num_more] 
         grasp_labels        :[B, center_num, 8] the labels of grasps (center[3], axis_y[3], grasp_angle[1], score[1])
     '''
     [center_num, score_thre, group_num, r_time_group, group_num_more, r_time_group_more, \
                                                             width, height, depth] = params
-    
+    #从原始点云中，按照分数和阈值，抓取中心的点云子集；此时的center_pc是通过FPS采样得来的
     center_pc, center_pc_index = _select_score_center(pc, predict_score, center_num, score_thre)
+    #根据抓取中心，获取他的包围球的内部点，以及索引
     pc_group_index, pc_group = _get_group_pc(pc, center_pc, center_pc_index, group_num, width, height, depth, r_time_group)
+    #另一个尺寸的包围球聚类
     pc_group_more_index, pc_group_more = _get_group_pc(pc, center_pc, center_pc_index, group_num_more, width, height, depth, r_time_group_more)
 
     grasp_labels = None
     if len(data_paths) > 0:
+        #通过
         grasp_labels = _get_center_grasp(center_pc_index, center_pc, data_paths, depth, use_theta)
     return center_pc, center_pc_index, pc_group_index, pc_group, pc_group_more_index, pc_group_more, grasp_labels
 
 
 def _get_center_grasp(center_pc_index, center_pc, data_paths, depth, use_theta=True):
     '''
+    这个函数是干啥的？
       Input:
-        center_pc_index: [B, center_num]
-        center_pc:   [B, center_num, 6] x,y,z,r,g,b
+        center_pc_index: [B, center_num] 输入抓取中心点的索引
+        center_pc:   [B, center_num, 6] x,y,z,r,g,b  抓取中心点的坐标，
         data_paths:  list
+        depth: 夹爪的深度
+        use_theta:是否使用了
       Output:
+        输出的这个是啥？
         grasp_trans: [B, center_num, 8] (center[3], axis_y[3], grasp_angle[1], score[1])
         or
         grasp_trans: [B, center_num, 13] (axis_x[3], axis_y[3], axis_z[3], center[3], score[1])
@@ -123,6 +132,7 @@ def _get_center_grasp(center_pc_index, center_pc, data_paths, depth, use_theta=T
         grasp_label[inv_mask, :, 1:2] = -grasp_label[inv_mask, :, 1:2]
         grasp_trans[:,:,:12] = grasp_label.transpose(2,1).contiguous().view(center_pc_index.shape[0], center_pc_index.shape[1], 12)
         grasp_trans[:,:,12:13] = grasp_score_label.view(center_pc_index.shape[0], center_pc_index.shape[1], 1)
+    
     if grasp_label.is_cuda:
         grasp_trans = grasp_trans.cuda()
     return grasp_trans
@@ -314,6 +324,7 @@ def _get_group_pc(pc, center_pc, center_pc_index, group_num, width, height, dept
         pc_group        :[B,center_num,group_num,6]
     '''
     B,A,C = pc.shape
+    #获取
     center_num = center_pc.shape[1]
     pc_group = torch.full((B, center_num, group_num, C), -1.0)
     pc_group_index = torch.full((B, center_num, group_num), -1)
@@ -348,6 +359,8 @@ def _get_group_pc(pc, center_pc, center_pc_index, group_num, width, height, dept
 def _select_score_center(pc, pre_score, center_num, score_thre):
     '''
      Get the points where their scores are positive as regression centers of grasps
+     1.先根据阈值抽取出原始点云中的正向点集
+     2.再根据FPS算法（不过，这里好像并没有这样算啊），计算出k个抓取中心点
      Input:
         pc              :[B,N,6]
         pre_score       :[B,N], belongs to [0,1]
@@ -358,11 +371,14 @@ def _select_score_center(pc, pre_score, center_num, score_thre):
         center_pc_index :[B, center_num] index of selected center in sampled points
     '''
     B,A,C = pc.shape
+    #将数据转换到CPU中
     pre_score = pre_score.cpu()
+    #如果Batchsize只有1
     if B == 1:
         positive_pc_mask = (pre_score.view(-1) > score_thre)
         positive_pc_mask = (pre_score.view(-1) > score_thre)
         positive_pc_mask = positive_pc_mask.cpu().numpy()
+        #
         map_index = torch.Tensor(np.nonzero(positive_pc_mask)[0]).view(-1).long()
 
         center_pc = torch.full((center_num, C), -1.0)

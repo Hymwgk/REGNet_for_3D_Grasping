@@ -1,3 +1,6 @@
+# -*- coding: utf-8 -*-
+#描述：这个文件
+#
 import os
 import numpy as np
 import time
@@ -71,6 +74,10 @@ def construct_scorenet(load_flag, obj_class_num=2, model_path=None, gpu_num=0):
 
 def construct_rnet(load_flag, training_refine, group_num, 
             gripper_num, grasp_score_threshold, depth, reg_channel, model_path=None, gpu_num=0):
+    """
+    构建GRN和RN (Optional)
+    training_refine: 是否一起构造后面RN
+    """
     #-------------- load region (refine) network----------------
     region_model = GripperRegionNetwork(training=training_refine, group_num=group_num, \
         gripper_num=gripper_num, grasp_score_threshold=grasp_score_threshold, radius=depth, reg_channel=reg_channel)
@@ -87,18 +94,26 @@ def construct_rnet(load_flag, training_refine, group_num,
         cur_dict.update(new_model_dict)
         region_model.load_state_dict(cur_dict)
         resume_num = 1+int(model_path.split('/')[-1].split('_')[1].split('.model')[0])
+    #返回构造好的模型
     return region_model, resume_num
 
 def construct_net(params, mode, gpu_num=0, load_score_flag=True, 
                                 score_path=None, load_rnet_flag=True, rnet_path=None):
-    # mode = ['train', 'pretrain_score', 'pretrain_region', 'validate', \
-    # 'validate_score', 'validate_region', 'test', 'test_score', 'test_region']
+    """
+    使用这个函数，构建一些函数
+    params:[obj_class_num, group_num, gripper_num, grasp_score_threshold, depth, reg_channel]
+    mode : ['train', 'pretrain_score', 'pretrain_region', 'validate', 'validate_score', 'validate_region', 'test', 'test_score', 'test_region']
+    gpu_num: GPU数量
+
+    """
+
     obj_class_num, group_num, gripper_num, grasp_score_threshold, depth, reg_channel = params
     if 'validate' in mode or 'test' in mode or mode == 'train':
         load_score_flag, load_rnet_flag = True, True
     elif mode == 'pretrain_region':
+        #只是预训练SN的时候，只把SN标志置1
         load_score_flag = True
-        
+    #构建SN网络
     score_model, score_resume = construct_scorenet(load_score_flag, obj_class_num, 
                                                         score_path, gpu_num)
     if 'score' in mode:
@@ -106,8 +121,9 @@ def construct_net(params, mode, gpu_num=0, load_score_flag=True,
     elif 'region' in mode:
         training_refine = False
     else:
+        #是否连带训练RN
         training_refine = True
-
+    #构建GRN网络
     region_model, rnet_resume = construct_rnet(load_rnet_flag, training_refine, group_num, 
                     gripper_num, grasp_score_threshold, depth, reg_channel, rnet_path, gpu_num)
     if mode == "train" and 'pretrain' in rnet_path.split('/')[-1]:

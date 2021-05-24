@@ -1,9 +1,14 @@
+# -*- coding: utf-8 -*-
+#描述：这个文件主要是构建scorenet，注意，这里使用的backbone网络是pointnet2，使用的是pointnet2的分割部分
+#
 import numpy as np
 import torch
 import torch.nn as nn
 import math
 import torch.nn.functional as F
 
+
+#导入PointNet2 的分割网络
 from multi_model.utils.pointnet2 import PointNet2Seg
 
 class ScoreNetwork(nn.Module):
