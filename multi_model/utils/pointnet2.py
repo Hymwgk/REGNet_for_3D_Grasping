@@ -121,12 +121,23 @@ class PointNet2Seg(nn.Module):
         return sparse_feature, x_score
 
 class PointNet2TwoStage(nn.Module):
+    """从grasp region包围球中提取特征，分别对k_cls个anchors进行分类和bias回归
+    num_points: Grasp Region中的点数
+    input_chann: 输入的点的通道数xyz rgb
+    k_cls: 对k_cls个anchor进行分类和回归，即每个包围球预设几个anchors
+    k_reg: 回归出的bias的通道数
+    k_reg_theta: 
+
+    """
     def __init__(self, num_points, input_chann, k_cls, k_reg, k_reg_theta, add_channel_flag=False):
         super(PointNet2TwoStage, self).__init__()
         self.num_points = num_points
         self.k_reg = k_reg
         self.k_cls = k_cls
-        self.k_reg_no_anchor = self.k_reg // self.k_cls
+        #  在这里
+        #  k_cls=self.anchor_number
+        # k_reg=self.reg_channel*self.anchor_number
+        self.k_reg_no_anchor = self.k_reg // self.k_cls  #向下取整
         self.k_reg_theta = k_reg_theta
 
         if not add_channel_flag:
@@ -137,8 +148,10 @@ class PointNet2TwoStage(nn.Module):
         self.bn = nn.BatchNorm1d(1024)
 
         #self.conv_cls1 = nn.Conv1d(128, 1024, 1)#128128+1024
+        #用于分类的mlp层
         self.conv_cls2 = nn.Conv1d(1024, 256, 1)#128+1024
         self.conv_cls3 = nn.Conv1d(256, 128, 1)#128+1024
+        #这个线性层没用到
         self.linear_cls = torch.nn.Linear(128, self.k_cls)
         self.conv_cls4 = nn.Conv1d(128, self.k_cls, 1)
         #self.bn_cls1 = nn.BatchNorm1d(1024)
@@ -147,8 +160,12 @@ class PointNet2TwoStage(nn.Module):
         self.bn_cls4 = nn.BatchNorm1d(self.k_cls)
 
         #self.conv_reg1 = nn.Conv1d(128, 1024, 1)#128+1024
+        #用于回归的几个mlp层
         self.conv_reg2 = nn.Conv1d(1024, 256, 1)#+1024
         self.conv_reg3 = nn.Conv1d(256, 128, 1)#+1024
+        #注意k_reg=reg_channel*anchor_number，
+        # 说明网络是同时对一个包围球的所有anchor的bias进行的回归，同时输出
+        #一次输出的是anchor_number个偏差，每个偏差都有指定的8个channel
         self.conv_reg4 = nn.Conv1d(128, self.k_reg, 1)
         #self.bn_reg1 = nn.BatchNorm1d(1024)
         self.bn_reg2 = nn.BatchNorm1d(256)
@@ -164,28 +181,35 @@ class PointNet2TwoStage(nn.Module):
 
     def forward(self, xyz, feature):
         #x = F.avg_pool1d(xyz.float(),self.num_points)
-        mp_x = self.mp1(xyz) #[len(true_mask), 128, 1]
-        ####mp_x = xyz.view(-1, 128, 1)
+        #第一步就将region内部的Feature使用maxpooling进行了对称处理
+        mp_x = self.mp1(xyz) #[B*N_C, 128, N_G]->[B*N_C, 128, 1]
+        #mp_x = xyz.view(-1, 128, 1)
         if feature is not None:
             #x[:,:128,:] = x[:,:128,:] + feature.view(feature.shape[0], feature.shape[1],1)
             mp_x = torch.cat((mp_x, feature.view(feature.shape[0], feature.shape[1],1)), dim=1)
             #mp_x = feature.view(feature.shape[0], feature.shape[1],1)
-        x = mp_x
-        
-        x = F.relu(self.bn(self.conv(x)))
 
-        x_cls = F.relu(self.bn_cls2(self.conv_cls2(x)))
-        x_cls = F.relu(self.bn_cls3(self.conv_cls3(x_cls)))
-        x_cls = self.bn_cls4(self.conv_cls4(x_cls))
+        #得到对称处理后的GraspRegion中的全局特征，此时，经过maxpooling之后，
+        # x形状由[B*N_C,FL,N_G]->[B*N_C,FL,1]
+        x = mp_x #[B*N_C,FL(128),1]
+        #分类和回归分支   公用了这个卷积变换
+        x = F.relu(self.bn(self.conv(x)))#[B*N_C,1024,1]
+
+        #经过了几个1d卷积，变换了特征，用于分类
+        #
+        x_cls = F.relu(self.bn_cls2(self.conv_cls2(x))) #[B*N_C,256,1]
+        x_cls = F.relu(self.bn_cls3(self.conv_cls3(x_cls)))#[B*N_C,128,1]
+        x_cls = self.bn_cls4(self.conv_cls4(x_cls))#输出x_cls=[B*N_C, self.k_cls, 1]
 
         B,C,_ = x_cls.size()
         x_cls = x_cls.view(B,C)
+        #再次将原始的特征变换几次，用于回归bias
+        x_reg = F.relu(self.bn_reg2(self.conv_reg2(x)))#[B*N_C,1024,1]
+        x_reg = F.relu(self.bn_reg3(self.conv_reg3(x_reg))) #[B*N_C,256,1]
+        x_reg = self.bn_reg4(self.conv_reg4(x_reg))#[B*N_C,self.k_reg,1]
 
-        x_reg = F.relu(self.bn_reg2(self.conv_reg2(x)))
-        x_reg = F.relu(self.bn_reg3(self.conv_reg3(x_reg)))
-        x_reg = self.bn_reg4(self.conv_reg4(x_reg))
-
-        x_reg = x_reg.view(B,-1,self.k_reg_no_anchor)
+        #变形，将anchor数量显示表示出来
+        x_reg = x_reg.view(B,-1,self.k_reg_no_anchor)  #[B*N_C,anchor_number,self.k_reg_no_anchor]
         x_reg[:,:,7:] = self.sigmod(x_reg[:,:,7:])
         '''
         x_reg = x_reg.view(B,-1,7)

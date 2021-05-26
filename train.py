@@ -108,13 +108,14 @@ r_time_group = 0.1  #系数r，根据该系数和夹爪尺寸来确定包围球�
 r_time_group_more = 0.8 #更大一些的系数r
 gripper_num = 64   #猜测是夹爪内部的点的指定数量
 use_theta = True
-reg_channel = 8     #
+reg_channel = 8     #回归出的bias通道数
 
  #夹爪参数       
 gripper_params = [width, height, depth]
 #初始化网络模型需要的参数
 #obj_class_num
 #group_num
+#reg_channel：GraspRegion网络，回归出的bias的通道数
 model_params   = [obj_class_num, group_num, gripper_num, grasp_score_threshold, depth, reg_channel]
 #关于抓取相关的一些参数：
 #center_num 要生成多少个抓取中心点

@@ -24,7 +24,7 @@ class GripperRegionNetwork(nn.Module):
         self.grasp_score_thre = grasp_score_threshold
         self.is_training_refine = training
         self.radius = radius
-        self.reg_channel = reg_channel
+        self.reg_channel = reg_channel #作者设定的是8
 
         #构建一个抽取区域特征的网络
         self.extrat_feature_region = PointNet2TwoStage(num_points=group_num, input_chann=6, k_cls=self.anchor_number,\
@@ -39,7 +39,7 @@ class GripperRegionNetwork(nn.Module):
 
     def _enumerate_anchors(self, centers):
         '''
-          用于枚举固定的anchors，在这里，将锚点和模板匹配在一起
+        输入指定的锚点的位置坐标，把预设的姿态模板和位置坐标连接在一起，构成预设的系列anchors位姿向量
           Enumerate anchors.
           Input:
             centers: [B*num of centers, 3] -> x, y, z  输入是Batch的所有中心点的xyz坐标
@@ -377,10 +377,10 @@ class GripperRegionNetwork(nn.Module):
           pc_group_more       :[B, center_num, group_num_more, 6]
           pc_group_index      :[B, center_num, group_num]
           pc_group_more_index :[B, center_num, group_num_more]
-          center_pc           :[B, center_num, 6]
+          center_pc           :[B, center_num, 6] -> 6 means  xyzrgb
           center_pc_index     :[B, center_num]
           pc                  :[B, A, 6]
-          all_feature         :[B, A, Feature])
+          all_feature         :[B, A, Feature]  A代表点云的点数
           gripper_params      :List [float,float,float] width, height, depth
           ground_grasp:       :[B,center_num,8] the labels of grasps (ground truth + score)
         '''
@@ -392,20 +392,28 @@ class GripperRegionNetwork(nn.Module):
         #设置两个loss
         loss_tuple, loss_tuple_stage2 = (None, None), (None, None)
 
-        #在这里，获取到每个锚点的多个anchors
+        #在这里，获取到每个锚点的多个anchors（位置+姿态）
         anchors = self._enumerate_anchors(center_pc[:,:,:3].view(-1,3).float())  ## [B*center_num, 8, 7]
+        #后面没有调用
         anchor_number = anchors.shape[1]
-
+        #
         pc_group_xyz = pc_group[:,:,:,:6].clone().view(B*N_C,N_G,-1)
         pc_group_more_xyz = pc_group_more[:,:,:,:6].clone().view(B*N_C,-1,6)
-        
+        #获得每个点的特征长度
         feature_len = all_feature.shape[2]
+        #由[B,A,FL] -> [B*A,FL]
         all_feature_new = all_feature.contiguous().view(-1, feature_len)
+        #
         add = torch.arange(B).view(-1,1).repeat(1, N_C*N_G)
         if pc_group_index.is_cuda:
             add = add.cuda()
+
+        #索引矩阵由[B,N_C,N_G]->[B,N_C*N_G]->[B*N_C*N_G]  因此需要加上长度为点云数A的步长
         pc_group_index_new = (pc_group_index.long().view(B, N_C*N_G) + add * all_feature.shape[1]).view(-1)
+        #center_feature好像并不是中心点的特征，而是所有group中每个点的特征;
+        #感觉叫pc_group_feature比较合适
         center_feature = all_feature_new[pc_group_index_new].view(B, N_C, N_G, feature_len)
+        #变形[B,N_C,N_G,FL]->[B*N_C,N_G,FL]
         center_feature = center_feature.view(-1, N_G, feature_len)#[true_mask]#.detach()
         
         ######--------------------------don't use grasp region--------------------------
@@ -416,13 +424,19 @@ class GripperRegionNetwork(nn.Module):
         # center_pc_index_new = (center_pc_index.long() + add * all_feature.shape[1]).view(-1)
         # center_feature = all_feature_new[center_pc_index_new].view(B, N_C, feature_len)
         # center_feature = center_feature.view(-1, 1, feature_len)#[true_mask]#.detach()
-        # # center_feature:[B*N_C, N_G, feature_len]      
-        
-        # x_cls:[B*N_C, num_anchor]  x_reg:[B*N_C, num_anchor, 8] 
-        #前向
+
+
+        #先把center_feature变换顺序[B*N_C,N_G,FL] -> [B*N_C,FL,N_G]再
+        #输入网络，去抽取每个包围球中的特征，每个包围球都代表了一个center，需要回归出num_anchor个graspd bias      
+        # center_feature:[B*N_C, N_G, feature_len]        
+        # x_cls:[B*N_C, num_anchor]对B*N_C 个anchor进行分类，
+        # x_reg:[B*N_C, num_anchor, 8] 对每个anchor回归出一个
+        #mp_center_feature:[B*N_C, FL(128),1] 每个group的maxpool之后的特征向量，表征该group的全局特征
         x_cls, x_reg, mp_center_feature = self.extrat_feature_region(center_feature.permute(0,2,1), None)
         
         # next_grasp: [len(true_mask), 8], next_gt: [len(true_mask), 8]
+        #将bias和预设的anchors沟通起来的部分，在这个计算损失函数中实现的
+        #另外，通过反向传播就可以更新bias生成部分的权重，使bias与anchos匹配起来
         next_grasp, loss_tuple, correct_tuple, next_gt, tt_pre, true_mask = self.compute_loss(x_reg, anchors, x_cls, ground_grasp)
         # print("true_mask",true_mask)
         keep_grasp_num_stage2 = [(torch.sum((true_mask<(i+1)*N_C) & (true_mask>=i*N_C))) for i in range(B)] 
