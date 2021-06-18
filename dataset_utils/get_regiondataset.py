@@ -14,7 +14,7 @@ def get_grasp_allobj(pc, predict_score, params, data_paths, use_theta=True):
     '''
       randomly sample grasp center in positive points set (all obj), 
       and get grasps centered at these centers.
-      实现的功能就是按照分数，从原始点云中，通过PFS算法（感觉实际上没有用这个），抽取出k个抓取中心
+      按照分数，从原始点云中，通过PFS算法（感觉实际上没有用这个）抽取出k个抓取中心
 
       Input:
         pc             :[B,N,6]  input points  原始点云，咋是6维度的？（答：因为是xyzrgb，带有颜色（感觉没必要颜色））
@@ -22,11 +22,11 @@ def get_grasp_allobj(pc, predict_score, params, data_paths, use_theta=True):
         params         :list [center_num(int), score_thre(float), group_num(int), r_time_group(float), group_num_more(int), \
                               r_time_group_more(float), width(float), height(float), depth(float)]
         data_paths     :list
-      Output:
-        center_pc           :[B, center_num, 6] 输出的是抓取中心的坐标&颜色
-        center_pc_index     :[B, center_num] index of selected center in sampled points 这些抓取中心点的索引
-        pc_group            :[B, center_num, group_num, 6]  这些包围球内部的点的坐标
-        pc_group_index      :[B, center_num, group_num]  这些抓取中心点形成的保卫球内点的索引
+      Output返回值:
+        center_pc           :[B, center_num, 6] 各抓取中心点的坐标&颜色
+        center_pc_index     :[B, center_num] index of selected center in sampled points 各抓取中心点在原始点云中的索引
+        pc_group            :[B, center_num, group_num, 6]  以各抓取中心点构造包围球，返回包围球内部所有点的坐标
+        pc_group_index      :[B, center_num, group_num]  包围球内部所有点在原始点云中的索引
         pc_group_more       :[B, center_num, group_num_more, 6]  更多一点的抓取的
         pc_group_more_index :[B, center_num, group_num_more] 
         grasp_labels        :[B, center_num, 8] the labels of grasps (center[3], axis_y[3], grasp_angle[1], score[1])

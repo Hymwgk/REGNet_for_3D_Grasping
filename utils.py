@@ -61,6 +61,9 @@ def get_dataloader(dataset, batchsize, shuffle=True, num_workers=8, pin_memory=T
 
 def construct_scorenet(load_flag, obj_class_num=2, model_path=None, gpu_num=0):
     score_model = ScoreNetwork(training=True, k_obj=obj_class_num)
+    '''
+    构建scorenet模型并返回
+    '''
 
     resume_num = 0
     if load_flag and model_path is not '':

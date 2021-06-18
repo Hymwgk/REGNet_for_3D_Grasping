@@ -121,14 +121,14 @@ class PointNet2Seg(nn.Module):
         return sparse_feature, x_score
 
 class PointNet2TwoStage(nn.Module):
-    """从grasp region包围球中提取特征，分别对k_cls个anchors进行分类和bias回归
+    '''
+    从grasp region包围球中提取特征，分别对k_cls个anchors进行分类和bias回归
     num_points: Grasp Region中的点数
     input_chann: 输入的点的通道数xyz rgb
     k_cls: 对k_cls个anchor进行分类和回归，即每个包围球预设几个anchors
-    k_reg: 回归出的bias的通道数
-    k_reg_theta: 
-
-    """
+    k_reg: 回归出的bias的通道数(维数)，这个网络是把所有的anchor的bias一起输出了
+    k_reg_theta:  没用到
+    '''
     def __init__(self, num_points, input_chann, k_cls, k_reg, k_reg_theta, add_channel_flag=False):
         super(PointNet2TwoStage, self).__init__()
         self.num_points = num_points
@@ -208,7 +208,7 @@ class PointNet2TwoStage(nn.Module):
         x_reg = F.relu(self.bn_reg3(self.conv_reg3(x_reg))) #[B*N_C,256,1]
         x_reg = self.bn_reg4(self.conv_reg4(x_reg))#[B*N_C,self.k_reg,1]
 
-        #变形，将anchor数量显示表示出来
+        #变形，将anchor显示表示出来，第二维度就是anchor的index
         x_reg = x_reg.view(B,-1,self.k_reg_no_anchor)  #[B*N_C,anchor_number,self.k_reg_no_anchor]
         x_reg[:,:,7:] = self.sigmod(x_reg[:,:,7:])
         '''
