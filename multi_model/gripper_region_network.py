@@ -10,38 +10,39 @@ from multi_model.utils.pointnet2 import PointNet2TwoStage, PointNet2Refine
 class GripperRegionNetwork(nn.Module):
     """
     关于GraspRegion的网络部分，通过标志位可以选择性地实现对RefineNet的集成
-    初始化的时候，需要对
-    training：
-    group_num：Grasp Region包围球中的点数
-    gripper_num：
-    grasp_score_threshold：
-    radius：
-    reg_channel：单个anchor回归出的对应bias等参数(作者设置的通道是8； x,y,z,rx,ry,rz)
     """
     def __init__(self, training, group_num, gripper_num, grasp_score_threshold, radius, reg_channel):
+        '''
+        training：bool型，选择是否加载RN网络
+        group_num：Grasp Region包围球中的点数
+        gripper_num：
+        grasp_score_threshold：
+        radius：
+        reg_channel：单个anchor回归出的对应bias等参数(作者设置的通道是8； x,y,z,rx,ry,rz)
+        '''
         super(GripperRegionNetwork, self).__init__()
         #是否
         self.group_number = group_num
-        #枚举anchors模板，这个只是把多种角度显式地表示出来，还没有和抓取中心点结合起来
-        self.templates = _enumerate_templates()
-        #计算一下所有anchors的数量
-        self.anchor_number = self.templates.shape[1]*self.templates.shape[2]
+        
+        self.templates = _enumerate_templates()#枚举不同角度的anchors模板，这个只是把多种角度显式地表示出来，还没有和抓取中心点结合起来
+        
+        self.anchor_number = self.templates.shape[1]*self.templates.shape[2]#计算一下所有anchors的数量
         #
         self.gripper_number = gripper_num
         self.grasp_score_thre = grasp_score_threshold
         self.is_training_refine = training
         self.radius = radius
-        self.reg_channel = reg_channel #作者设定的是8
+        self.reg_channel = reg_channel #每个anchor抓取要回归出的值一共8通道，其中3通道位置残差
 
-        #抽取包围球区域特征，并利用anchors回归出与之对应的bias和分类
+        #利用包围球内点特征，回归抓取位置姿态残差与分数
         self.extrat_feature_region = PointNet2TwoStage(
-            num_points=group_num, 
-            input_chann=6, 
-            k_cls=self.anchor_number,
-            k_reg=self.reg_channel*self.anchor_number,
-            k_reg_theta=self.anchor_number)  
+            num_points=group_num, #包围球内点数
+            input_chann=6, #点云通道数xyzrgb
+            k_cls=self.anchor_number,#每个中心点对应M个anchor
+            k_reg=self.reg_channel*self.anchor_number,#同时回归出M个anchor抓取的每个通道的res残差
+            k_reg_theta=self.anchor_number)  #回归出theta的残差
 
-        #构建
+        #构建RN网络（不一定用上去，要看模式的选择）
         self.extrat_feature_refine = PointNet2Refine(num_points=gripper_num, input_chann=6, k_cls=2, k_reg=self.reg_channel)
 
         self.criterion_cos = nn.CosineEmbeddingLoss(reduction='mean')
@@ -49,58 +50,56 @@ class GripperRegionNetwork(nn.Module):
         self.smooth_l1_loss = nn.SmoothL1Loss(reduction='mean')
 
     def _enumerate_anchors(self, centers):
-        '''
-        输入指定的锚点的位置坐标，把预设的姿态模板和位置坐标连接在一起，构成预设的系列anchors位姿向量
+        '''根据给定的锚点位置坐标，把预设的姿态模板和位置坐标连接在一起，构成预设的系列anchors位姿向量
+        每个抓取中心，将预设M个anchors
           Enumerate anchors.
           Input:
             centers: [B*num of centers, 3] -> x, y, z  输入是Batch的所有中心点的xyz坐标
-            self.templates :[1,8,1,4] -> 8:rxryrz_num 1:theta_num 4:rxryrztheta
+            self.templates :[1,M,1,4] -> M:r_x r_y r_z_num 1:theta_num 4:r_x r_y r_z theta
           Return:
-            t_anchors: [B*num of centers, 8, 7] -> the number of anchors is 8
+            t_anchors: [B*num of centers, M, 7] -> the number of anchors is M
                                                      7 means (x, y, z, rx, ry, rz, theta)
-                                                     每个中心点将固定有8个模板，每个模板都是7维的
+                                                     每个中心点将固定有M个模板，每个模板都是7维的
         '''
         if centers.cuda:
-            self.templates = self.templates.cuda()
+            self.templates = self.templates.cuda() #获取模板
         t_center = centers.view(centers.shape[0],1,1,-1).repeat(1,self.templates.shape[1],self.templates.shape[2],1)
         t_anchors = torch.cat( [t_center, self.templates.float().repeat(centers.shape[0],1,1,1)], dim=-1).view(-1, self.templates.shape[1]*self.templates.shape[2], 7)
         return t_anchors
 
     def compute_loss(self, first_grasp, anchors, first_cls, ground):
-        '''
-        在训练时，计算回归出的anchors和ground truth之间的差别loss
-        预测：每个中心点共有k个anchors
-        真实：每个中心点只有一个ground_truth_grasp
-          Input:  
-            first_grasp : [B*center_num, num_anchor, 8]  the regression grasps after the first regrssion包围球中回归出的抓取值
-            anchors     : [B*center_num, num_anchor, 7]  the anchor grasps
-            first_cls   : [B*center_num, num_anchor]     the classification score of grasps after the first regrssion
+        '''在训练时，计算回归出的anchors和ground truth之间的差别loss
+        Input:  
+            first_grasp : [B*center_num, num_anchor, 8]  回归出的残差+score
+            anchors     : [B*center_num, num_anchor, 7]    anchors
+            first_cls   : [B*center_num, num_anchor]           对B*M个anchors的分类结果
             ground      : [B, center_num, 8]  ground truth. 只在训练的时候有用，而在测试时候是没有的
                                     8 means the (p,r,theta,score) of a grasp. 说明groudtruth，在每个中心点处，只有一个真实抓取
-          Return:
+        Return:
             next_grasp  : [len(select_center_index), 7]
             loss_tuple, correct_tuple
             next_gt : [len(select_center_index), 7]
+        Loss一共有两部分：
+        1. B*M个anchor的分类误差
+        2. res的回归损失
+        问题：groundtruth是如何确定是哪个编号的anchor离自己最近的呢？在哪里计算的？
         '''
         #### gmask: [len(gmask)]  true mask index of centers which has a corresponding grasp 
-        #注意len(temp)只会返回temp的第0维度的长度
-        BmulN_C = len(first_grasp) 
+        BmulN_C = len(first_grasp) #一个batch中有多少个抓取中心
         # B, N_C = ground.shape[0], ground.shape[1]
-        if ground is not None:#训练时是有ground_truth的
+        if ground is not None:#训练时
             #gmask是1维的， len(gmask)是groudtruth中带有正抓取的抓取中心点的数量，内部值是该抓取中心点的索引
             #例如[0,1,3,5,6,7] 表明groundtruth在第0，1，3，5，7号抓取中心点具有正抓取
             gmask = torch.nonzero(ground.view(-1,ground.shape[2])[:,-1] != -1).view(-1) #gmask[B*center_num, 1]
             print(BmulN_C, "centers has", len(gmask), "grasps" )              
-        else:#测试的时候则认为
+        else:#测试时
             gmask = torch.arange(0, BmulN_C)#
         if first_grasp.cuda:
             gmask = gmask.cuda()
 
-        #利用gmask筛选出来具有正抓取anchor的中心点，并提取出对应的anchor（7维）
-        anchors = anchors[gmask, :, :]
-        ##### tt: [num_anchor*len(true_mask), 7]   the anchor grasps
-        #将anchors拷贝并变形为[num_anchor*len(true_mask), 7]
-        tt = anchors.clone().detach().transpose(1,0).contiguous().view(-1,7)
+        
+        anchors = anchors[gmask, :, :]#利用gmask筛选出来与groundtruth最接近的anchor,  [num_anchor*len(true_mask), 7]
+        tt = anchors.clone().detach().transpose(1,0).contiguous().view(-1,7) #拷贝并变形为[num_anchor*len(true_mask), 7]
         #使用gmask，提取出与groundtruth正抓取中心点对应的回归预测grasp，以及预测的类别
         first_grasp, first_cls = first_grasp[gmask], first_cls[gmask]
 
@@ -111,34 +110,42 @@ class GripperRegionNetwork(nn.Module):
         #predict_8就是first_cls中预测分类值为1的各个抓取的编号索引
         _, predict_8 = torch.max(first_cls.transpose(1,0).contiguous(), dim=0)
         # print(predict_8)
-        #
+        #这就是预测出的最相似的anchor
         final_mask = predict_8.clone().view(-1)
 
 
         for i in range(len(final_mask)):
             final_mask[i] = final_mask[i] * len(final_mask) + i
 
-
+        #筛选出来
         first_grasp_pre, tt_pre = first_grasp[final_mask], tt[final_mask]
-        
-        sum_r_pre = torch.sqrt(torch.sum(torch.mul(first_grasp_pre[:,3:6]+tt_pre[:,3:6], first_grasp_pre[:,3:6]+tt_pre[:,3:6]), dim=1).add_(1e-12) ).view(-1,1)
+
+
+        sum_r_pre = torch.sqrt(torch.sum(torch.mul(first_grasp_pre[:,3:6]+tt_pre[:,3:6],
+                 first_grasp_pre[:,3:6]+tt_pre[:,3:6]), dim=1).add_(1e-12) ).view(-1,1)
+        #res'c
         first_grasp_center_pre = first_grasp_pre[:, :3]*self.radius + tt_pre[:,:3]
+        #res'r
         first_grasp_r_pre = torch.div(first_grasp_pre[:,3:6]+tt_pre[:,3:6], sum_r_pre)
+        #res'theta
         first_grasp_angle_pre = np.pi * (first_grasp_pre[:,6:7]+tt_pre[:,6:7])
+        #res's  
         first_grasp_score_pre = first_grasp_pre[:,7:]
         # (sinx, cosx)
         #first_grasp_angle_pre = torch.atan2(first_grasp_pre[:,-3].view(-1), first_grasp_pre[:,-2].view(-2)).view(-1,1)
+        
+        #构成res'u, u\in {c,r,theta,s}
         next_grasp = torch.cat((first_grasp_center_pre, first_grasp_r_pre, \
                                     first_grasp_angle_pre, first_grasp_score_pre), dim=-1)
         
         loss_tuple = (None, None)
         correct_tuple, next_gt, tt_gt = (None, None, None, None), None, None
 
-        #仅在训练的时候有用到
+        #仅在训练的时候有用到，计算gt的res差
         if ground is not None:
-
             repeat_ground = ground[:,:,:7].contiguous().view(-1, 7)[gmask, :].repeat(self.templates.shape[1]*self.templates.shape[2],1)
-            repeat_ground_truth = ground[:,:,7:].contiguous().view(-1, ground.shape[2]-7)[gmask, :].repeat(self.templates.shape[1]*self.templates.shape[2],1)
+            repeat_ground_truth = ground[:,:,7:].contiguous().view(-1, ground.shape[2]-7)[gmask, :].\
+                repeat(self.templates.shape[1]*self.templates.shape[2],1)
             ## r_sim: [num_anchor, len(gmask)]
             r_sim = compute_cos_sim(tt[:,3:6], repeat_ground[:,3:6]).view(-1).view(num_anchor, -1)
 
@@ -146,7 +153,8 @@ class GripperRegionNetwork(nn.Module):
             sim = r_sim.clone().transpose(1,0)
             sort_cls, sort_index = torch.sort(sim, dim=1, descending=False)
             ground_8 = sort_index[:,0].view(-1)
-            print(ground_8)
+            
+            #print(ground_8)
             iou_nonzero = ground_8.clone()
             for i in range(len(iou_nonzero)):
                 iou_nonzero[i] = iou_nonzero[i] * len(iou_nonzero) + i
@@ -403,72 +411,63 @@ class GripperRegionNetwork(nn.Module):
         
     def forward(self, pc_group, pc_group_more, pc_group_index, pc_group_more_index, center_pc, \
                     center_pc_index, pc, all_feature, gripper_params, ground_grasp=None, data_path=None):
-        '''
-          pc_group            :[B, center_num, group_num, 6]
-          pc_group_more       :[B, center_num, group_num_more, 6]
-          pc_group_index      :[B, center_num, group_num]
-          pc_group_more_index :[B, center_num, group_num_more]
-          center_pc           :[B, center_num, 6] -> 6 means  xyzrgb    scoreNet返回的各抓取中心点的坐标&颜色
-          center_pc_index     :[B, center_num]                                        各抓取中心点在原始点云中的索引
-          pc                  :[B, A, 6]
-          all_feature         :[B, A, Feature]  A代表点云的点数
-          gripper_params      :List [float,float,float] width, height, depth
-          ground_grasp:       :[B,center_num,8] the labels of grasps (ground truth + score)
+        '''GRN网络的前向传播
+        pc_group                            :[B, center_num, group_num, 6]          k1 个包围球内点的xyzrgb值
+        pc_group_more               :[B, center_num, group_num_more, 6]   
+        pc_group_index              :[B, center_num, group_num]   k1个包围球内部点在pc中的索引
+        pc_group_more_index :[B, center_num, group_num_more]
+        center_pc                            :[B, center_num, 6]   FPS返回的k1个抓取中心点的xyzrgb
+        center_pc_index              :[B, center_num]        k1个抓取中心点在原始pc中的索引
+        pc                                           :[B, A, 6]  原始（剪切后）点云
+        all_feature                          :[B, A, Feature]  所有点云点的点特征
+        gripper_params               :List [float,float,float] width, height, depth 夹爪参数
+        ground_grasp:                  :[B,center_num,8] the labels of grasps (ground truth + score) ground truth抓取
         '''
         B,N_C,N_G,C = pc_group.shape
         _,_,N_G_M,_ = pc_group_more.shape
         
         cuda = pc.is_cuda
         final_grasp, final_grasp_stage1 = torch.Tensor(), torch.Tensor()
-        #设置两个loss
-        loss_tuple, loss_tuple_stage2 = (None, None), (None, None)
+        
+        loss_tuple, loss_tuple_stage2 = (None, None), (None, None)#设置两个loss
 
         #在这里，获取到每个锚点的多个anchors（位置+姿态）
-        anchors = self._enumerate_anchors(center_pc[:,:,:3].view(-1,3).float())  ## [B*center_num, 8, 7]
-        #后面没有调用
-        anchor_number = anchors.shape[1]
-        #
-        pc_group_xyz = pc_group[:,:,:,:6].clone().view(B*N_C,N_G,-1)
+        anchors = self._enumerate_anchors(center_pc[:,:,:3].view(-1,3).float())# [B*center_num, M, 7]
+        
+        #anchor_number = anchors.shape[1]#
+        #pc_group_xyz = pc_group[:,:,:,:6].clone().view(B*N_C,N_G,-1)
+
         pc_group_more_xyz = pc_group_more[:,:,:,:6].clone().view(B*N_C,-1,6)
-        #获得每个点的特征长度
-        feature_len = all_feature.shape[2]
-        #由[B,A,FL] -> [B*A,FL]
-        all_feature_new = all_feature.contiguous().view(-1, feature_len)
-        #
+        
+        feature_len = all_feature.shape[2]#获得每个点的特征长度
+        #变形
+        all_feature_new = all_feature.contiguous().view(-1, feature_len)#[B,A,FL] -> [B*A,FL]
+        
         add = torch.arange(B).view(-1,1).repeat(1, N_C*N_G)
         if pc_group_index.is_cuda:
             add = add.cuda()
 
-        #索引矩阵由[B,N_C,N_G]->[B,N_C*N_G]->[B*N_C*N_G]  因此需要加上长度为点云数A的步长
+        #[B,N_C,N_G]->[B,N_C*N_G]->[B*N_C*N_G]  因此需要加上长度为点云数A的步长
         pc_group_index_new = (pc_group_index.long().view(B, N_C*N_G) + add * all_feature.shape[1]).view(-1)
-        #center_feature好像并不是中心点的特征，而是所有group中每个点的特征;
-        #感觉叫pc_group_feature比较合适
-        center_feature = all_feature_new[pc_group_index_new].view(B, N_C, N_G, feature_len)
+
+        #根据索引抽取每个包围球中各个点的点特征
+        pc_group_features = all_feature_new[pc_group_index_new].view(B, N_C, N_G, feature_len)
         #变形[B,N_C,N_G,FL]->[B*N_C,N_G,FL]
-        center_feature = center_feature.view(-1, N_G, feature_len)#[true_mask]#.detach()
+        pc_group_features = pc_group_features.view(-1, N_G, feature_len)#[true_mask]#.detach()
         
-        ######--------------------------don't use grasp region--------------------------
-        # all_feature_new = all_feature.view(-1, feature_len)
-        # add = torch.arange(B).view(-1,1).repeat(1, N_C)
-        # if pc_group_index.cuda:
-        #     add = add.cuda();
-        # center_pc_index_new = (center_pc_index.long() + add * all_feature.shape[1]).view(-1)
-        # center_feature = all_feature_new[center_pc_index_new].view(B, N_C, feature_len)
-        # center_feature = center_feature.view(-1, 1, feature_len)#[true_mask]#.detach()
-
-
         '''先把center_feature变换顺序[B*N_C,N_G,FL] -> [B*N_C,FL,N_G]再
         输入网络，去抽取每个包围球中的特征，每个包围球都代表了一个center，需要回归出num_anchor个grasp bias      
-        center_feature:[B*N_C, N_G, feature_len]        
-        x_cls:[B*N_C, num_anchor]对B*N_C 个anchor进行分类，
-        x_reg:[B*N_C, num_anchor, 8] 对每个anchor回归出一个
-        mp_center_feature:[B*N_C, FL(128),1] 每个group的maxpool之后的特征向量，表征该group的全局特征
+        pc_group_features:[B*N_C, N_G, feature_len]每个包围球中的点的特征
+        x_cls:                             [B*N_C, num_anchor]        对B*N_C个包围球中的每个anchor进行分类的结果
+        x_reg:                            [B*N_C, num_anchor, 8]    对B*N_C个包围球中的每个anchor进行位姿res+score回归的结果
+        mp_center_feature:[B*N_C, FL(128),1]                每个group的maxpool之后的特征向量，表征该group的全局特征
         '''
-        x_cls, x_reg, mp_center_feature = self.extrat_feature_region(center_feature.permute(0,2,1), None)
+        x_cls, x_reg, mp_center_feature = self.extrat_feature_region(pc_group_features.permute(0,2,1), None)
         
-        #next_grasp: [len(true_mask), 8], next_gt: [len(true_mask), 8]
-        #将bias和预设的anchors沟通起来的部分，在这个计算损失函数中实现的
-        #另外，通过反向传播就可以更新bias生成部分的权重，使bias与anchos匹配起来
+        '''将残差与anchor结合，对比ground truth，计算该部分Loss
+        next_grasp: [len(true_mask), 8]
+        next_gt: [len(true_mask), 8]
+        '''
         next_grasp, loss_tuple, correct_tuple, next_gt, tt_pre, true_mask = self.compute_loss(x_reg, anchors, x_cls, ground_grasp)
         
         # print("true_mask",true_mask)
@@ -612,11 +611,10 @@ def get_gripper_region_transform(group_points, group_index, grasp, region_num, g
     return gripper_pc, gripper_pc_index, gripper_pc_index_inall, true_mask_index#, gripper_pc_formal
 
 def _enumerate_templates():
-    '''
-      枚举anchors的姿态，每个抓取点对应120个姿态
+    '''枚举anchors的姿态，每个抓取点对应M个锚姿态
       (仅仅是姿态，没有位置)
       Enumerate all grasp anchors:
-      For one score center, we generate 120 anchors.
+      For one score center, we generate M anchors.
 
       grasp configuration:(p, r, theta)
       r -> (1,0,0),                   (sqrt(2)/2, 0, sqrt(2)/2),           (sqrt(2)/2, 0, -sqrt(2)/2),           \
@@ -631,10 +629,9 @@ def _enumerate_templates():
     '''
     sqrt2 = math.sqrt(2)/2
     sqrt3 = math.sqrt(3)/3
-    t_r = torch.FloatTensor([
-                        [sqrt3, sqrt3, sqrt3], [sqrt3, sqrt3, -sqrt3], \
-                        [sqrt3, -sqrt3, -sqrt3], [sqrt3, -sqrt3, sqrt3]\
-                        ]).view(1,4,1,3).repeat(1,1,1,1)#repeat(1,1,5,1)
+
+    t_r = torch.FloatTensor([[sqrt3, sqrt3, sqrt3],[sqrt3, sqrt3, -sqrt3],
+                                                    [sqrt3, -sqrt3, -sqrt3], [sqrt3, -sqrt3, sqrt3]]).view(1,4,1,3).repeat(1,1,1,1)#repeat(1,1,5,1)
     #t_r = torch.FloatTensor([
     #                    [sqrt3, sqrt3, sqrt3], [sqrt3, sqrt3, -sqrt3], \
     #                    [-sqrt3, sqrt3, -sqrt3], [-sqrt3, sqrt3, sqrt3], \
@@ -646,7 +643,7 @@ def _enumerate_templates():
     #                    [sqrt2, sqrt2, 0], [sqrt2, -sqrt2, 0]
     #                    ]).view(1,2,1,3).repeat(1,1,1,1)#repeat(1,1,5,1)
     #t_theta = torch.FloatTensor([-math.pi/4, 0, math.pi/4]).view(1,1,3,1).repeat(1,8,1,1)
-    t_theta = torch.FloatTensor([0]).view(1,1,1,1).repeat(1,4,1,1)
+    t_theta = torch.FloatTensor([0]).view(1,1,1,1).repeat(1,4,1,1)#角度的anchors全都设置为0
     tem = torch.cat([t_r, t_theta], dim=3).half()
     return tem
 

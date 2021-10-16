@@ -53,22 +53,22 @@ parser.add_argument('--lr-score' , type=float, default=0.0001) #0.001
 #指定regionnet的学习率
 parser.add_argument('--lr-region', type=float, default=0.0001)
 #加载与训练的scorenet的地址
-parser.add_argument('--load-score-path', type=str, default='/data1/cxg6/REGNet_for_3D_Grasping/assets/models/pretrain_for_refine_regnet_bs15/score_17.model')
+parser.add_argument('--load-score-path', type=str, default='/home/wgk/code/REGNet_for_3D_Grasping/assets/models/final/score_20.model')
 #加载regionnet的地址
-parser.add_argument('--load-region-path', type=str, default='/data1/cxg6/REGNet_for_3D_Grasping/assets/models/pretrain_for_refine_regnet_bs15/region_17.model')
+parser.add_argument('--load-region-path', type=str, default='/home/wgk/code/REGNet_for_3D_Grasping/assets/models/final/region_20.model')
 #parser.add_argument('--load-score-path', type=str, default='')
 # parser.add_argument('--load-region-path', type=str, default='')
 
 #
-parser.add_argument('--load-score-flag', type=bool, default=True)
-parser.add_argument('--load-region-flag', type=bool, default=True)
+parser.add_argument('--load-score-flag', type=bool, default=False)
+parser.add_argument('--load-region-flag', type=bool, default=False)
 
 parser.add_argument('--use-multi', type=bool, default=False)
-parser.add_argument('--data-path', type=str, default='/data1/cxg6/eval_data', help='data path')
+parser.add_argument('--data-path', type=str, default='/home/wgk/dataset/REGnet', help='data path')
 
-parser.add_argument('--model-path', type=str, default='/data1/cxg6/REGNet_for_3D_Grasping/assets/models/', help='to saved model path')
-parser.add_argument('--log-path', type=str, default='/data1/cxg6/REGNet_for_3D_Grasping/assets/log/', help='to saved log path')
-parser.add_argument('--folder-name', type=str, default='/data1/cxg6/REGNet_for_3D_Grasping/test_file/real_data')
+parser.add_argument('--model-path', type=str, default='/home/wgk/code/REGNet_for_3D_Grasping/assets/models/', help='to saved model path')
+parser.add_argument('--log-path', type=str, default='/home/wgk/code/REGNet_for_3D_Grasping/assets/log/', help='to saved log path')
+parser.add_argument('--folder-name', type=str, default='/home/wgk/code/REGNet_for_3D_Grasping/test_file/real_data')
 parser.add_argument('--file-name', type=str, default='')
 parser.add_argument('--log-interval', type=int, default=1)
 parser.add_argument('--save-interval', type=int, default=1)
@@ -100,7 +100,7 @@ width, height, depth = 0.060, 0.010, 0.06#5
 table_height = 0.75
 #抓取的分数阈值
 grasp_score_threshold = 0.5 # 0.3
-center_num = 64#64#128
+center_num = 64#每一帧点云要最多回归出生成64个抓取，即GRN部分k1=64，这个数据跟数据集groundtruth有关系么？
 score_thre = 0.5
 group_num=256 #一个包围球内部的点数
 group_num_more=1024  #更多的点
@@ -110,8 +110,8 @@ gripper_num = 64   #猜测是夹爪内部的点的指定数量
 use_theta = True
 reg_channel = 8     #回归出的bias通道数
 
- #夹爪参数       
-gripper_params = [width, height, depth]
+ 
+gripper_params = [width, height, depth]#夹爪参数       
 #初始化网络模型需要的参数
 #obj_class_num
 #group_num
@@ -134,9 +134,10 @@ train_score_dataset = utils.get_dataset(all_points_num, args.data_path, "train",
 val_score_dataset = utils.get_dataset(all_points_num, args.data_path, "validate", 1, width)  #Validation
 test_score_dataset = utils.get_dataset(all_points_num, args.data_path, "test", 1, width)     #Test
 
-train_score_loader = utils.get_dataloader(train_score_dataset, args.batch_size, shuffle=True)
-val_score_loader   = utils.get_dataloader(val_score_dataset, 1, shuffle=True)
-test_score_loader  = utils.get_dataloader(test_score_dataset, 1, shuffle=False)
+#构造dataloader
+train_score_loader = utils.get_dataloader(train_score_dataset, args.batch_size,num_workers=1, shuffle=True)#测试时使用单线程导入数据
+val_score_loader   = utils.get_dataloader(val_score_dataset, 1,num_workers=1, shuffle=True)
+test_score_loader  = utils.get_dataloader(test_score_dataset, 1,num_workers=1, shuffle=False)
 #==========================
 #构建模型
 score_model, region_model, resume_epoch = utils.construct_net(model_params, args.mode, gpu_num=args.gpu, 
@@ -155,7 +156,7 @@ if region_model is not None:
 #============================
 class ScoreModule():
     """
-    SN模块？
+    SN子网络训练
     """
     def __init__(self, start_epoch=0, end_epoch=1, train_data_loader=None, val_data_loader=None, test_data_loader=None):
         #从第几个epoch开始
@@ -232,26 +233,22 @@ class ScoreModule():
             scheduler_score.step()
 
     def pretrain_score(self, epoch):
-        '''
-        如果是对scorenet进行一个预训练，就调用上面
+        '''如果是对scorenet进行一个预训练，就调用上面
         '''
         self.train_val(epoch, mode='train')
 
     def validate_score(self, epoch):
-        '''
-        验证模式
+        '''验证模式
         '''
         self.train_val(epoch, mode='validate')
 
     def test_score(self, epoch):
-        '''
-        测试模式
+        '''测试模式
         '''
         self.train_val(epoch, mode='test')
     
     def train(self):
-        '''
-        训练
+        '''训练
         '''
         for epoch in range(self.start_epoch, self.end_epoch):
             print("---------------pretrain_score epoch", epoch, "------------------")
@@ -320,8 +317,8 @@ class RegionModule():
         pre_loss1, pre_loss2, pre_loss3, pre_loss4 = 0, 0, 0, 0
         record_stage2 = (0, 0, 0, 0)
 
-        #开始主循环训练部分
-        for batch_idx, (pc, pc_score, pc_label, data_path, data_width) in enumerate(dataloader):
+        #开始训练
+        for batch_idx, (pc, pc_score, pc_label, data_path, data_width) in enumerate(dataloader):#拿出一个batch的样本数据
             if mode == 'train':
                 optimizer_score.zero_grad()
                 optimizer_region.zero_grad()
@@ -329,20 +326,31 @@ class RegionModule():
             if args.gpu != -1:
                 #把数据导入显存
                 pc, pc_score, pc_label, data_width = pc.cuda(), pc_score.cuda(), pc_label.cuda(), data_width.cuda()
-    
-            # all_feature: [B, N, C(512)], output_score: [B, N]
-            #训练SN
-            #all_feature[out] 猜测是PointNet2对全部点变换的特征
-            #output_score[out] 猜测是对全部点预测的分数
-            #loss[out] 是该子网络的损失
+
+
+            '''训练SN子网络
+            all_feature: [B, N, C(512)]猜测是PointNet2对全部点变换的特征
+            output_score: [B, N]猜测是对全部点预测的分数
+            loss:  是该子网络的损失
+            '''
             all_feature, output_score, loss = score_model(pc, pc_score, pc_label)
-            #获取抓取点
-            #
+
+
+            '''从SN预测出的分割点云中抽取k1个点当做抓取中心，并抽取包围球点
+            center_pc: k1个抓取中心点的点坐标&颜色
+            center_pc_index: k1个抓取中心点的索引
+            pc_group_index: 包围球中的点在原始pc中的点索引
+            pc_group:包围球内部点坐标&颜色
+            pc_group_more_index: 放大一些包围球内点的索引
+            pc_group_more: 放大一些包围球内点坐标&颜色
+            grasp_labels: 从数据集中，选出的k1个点对应的groundtruth抓取
+            '''
             center_pc, center_pc_index, pc_group_index, pc_group, pc_group_more_index, pc_group_more, \
                     grasp_labels = get_grasp_allobj(pc, output_score, self.params, data_path, use_theta)
-            #训练GRN，SN输出的数据，是有一些要传入GRN网络的对么？所以你看
-            #除了一些独立的初始化参数之外，传入的还有SN网络输出的"all_feature"
-            #all_feature
+
+
+            '''训练GRN子网络            
+            '''
             grasp_stage2, keep_grasp_num_stage2, stage2_mask, loss_tuple, correct_tuple, next_gt, _, _, _, _, _, _, _, _, _, _, = \
                             region_model(pc_group, pc_group_more, pc_group_index, pc_group_more_index, center_pc,\
                             center_pc_index, pc, all_feature, self.gripper_params, grasp_labels, data_path)
@@ -395,6 +403,8 @@ class RegionModule():
         self.train_val(epoch, mode='test', use_log=True)
 
     def train(self):
+        '''入口
+        '''
         for epoch in range(self.start_epoch, self.end_epoch):
             print("---------------pretrain_region epoch", epoch, "------------------")
             path_score  = os.path.join(self.saved_base_path, 'score_{}.model'.format(epoch))
@@ -415,8 +425,7 @@ class RegionModule():
         self.test_region(epoch)
 
 class RefineModule():
-    '''
-    对三个子网络同时进行训练；但是这里没有见到有refine net部分的网络
+    '''对三个子网络同时进行训练；但是这里没有见到有refine net部分的网络
     猜测在实现的时候，实际上RN和GRN两个网络是实现在一起了，没有单独把RN拿出来
     
     '''
@@ -596,16 +605,15 @@ class RefineModule():
         self.test_refine(epoch, mode='test_single')
 
 def main():
-    if args.mode == 'pretrain_score':
+    if args.mode == 'pretrain_score':#预训练SN
         scoreModule = ScoreModule(resume_epoch, args.epoch, train_score_loader, val_score_loader, test_score_loader)
         scoreModule.train()
 
-    elif args.mode == 'pretrain_region':
+    elif args.mode == 'pretrain_region':#预训练GRN
         regionModule = RegionModule(resume_epoch, args.epoch, train_score_loader, val_score_loader, test_score_loader)
         regionModule.train()
             
-    elif args.mode == 'train':
-        #训练整个网络SN/GRN/RN
+    elif args.mode == 'train':#训练整个网络SN/GRN/RN
         refineModule = RefineModule(resume_epoch, args.epoch, train_score_loader, val_score_loader, test_score_loader)
         refineModule.train()
 

@@ -121,15 +121,17 @@ class PointNet2Seg(nn.Module):
         return sparse_feature, x_score
 
 class PointNet2TwoStage(nn.Module):
-    '''
-    从grasp region包围球中提取特征，分别对k_cls个anchors进行分类和bias回归
-    num_points: Grasp Region中的点数
-    input_chann: 输入的点的通道数xyz rgb
-    k_cls: 对k_cls个anchor进行分类和回归，即每个包围球预设几个anchors
-    k_reg: 回归出的bias的通道数(维数)，这个网络是把所有的anchor的bias一起输出了
-    k_reg_theta:  没用到
+    '''    GRN 核心模块：利用k1个grasp region包围球中各个点特征，对k_cls个anchors进行分类和bias回归
+    注意，该子模块输入的单样本是一个包围球内点特征；单样本不再是一帧点云，而只是一个包围球
     '''
     def __init__(self, num_points, input_chann, k_cls, k_reg, k_reg_theta, add_channel_flag=False):
+        '''    
+        num_points: 统一固定每个包围球内部的点数
+        input_chann: 输入的点的通道数xyz rgb
+        k_cls: 每个中心点对应M个anchor
+        k_reg: 同时回归单个包围球中所有anchor的位姿res+score，=k_cls*reg_channel
+        k_reg_theta:  没用到
+        '''
         super(PointNet2TwoStage, self).__init__()
         self.num_points = num_points
         self.k_reg = k_reg
@@ -137,7 +139,7 @@ class PointNet2TwoStage(nn.Module):
         #  在这里
         #  k_cls=self.anchor_number
         # k_reg=self.reg_channel*self.anchor_number
-        self.k_reg_no_anchor = self.k_reg // self.k_cls  #向下取整
+        self.k_reg_no_anchor = self.k_reg // self.k_cls  #得到每个anchor要回归的通道数reg_channel
         self.k_reg_theta = k_reg_theta
 
         if not add_channel_flag:
@@ -195,21 +197,20 @@ class PointNet2TwoStage(nn.Module):
         #分类和回归分支   公用了这个卷积变换
         x = F.relu(self.bn(self.conv(x)))#[B*N_C,1024,1]
 
-        #经过了几个1d卷积，变换了特征，用于分类
-        #
+        #对当前包围球内的M个anchor进行分类
         x_cls = F.relu(self.bn_cls2(self.conv_cls2(x))) #[B*N_C,256,1]
         x_cls = F.relu(self.bn_cls3(self.conv_cls3(x_cls)))#[B*N_C,128,1]
         x_cls = self.bn_cls4(self.conv_cls4(x_cls))#输出x_cls=[B*N_C, self.k_cls, 1]
 
         B,C,_ = x_cls.size()
         x_cls = x_cls.view(B,C)
-        #再次将原始的特征变换几次，用于回归bias
+        #对当前包围球内的每个anchor回归它们的残差
         x_reg = F.relu(self.bn_reg2(self.conv_reg2(x)))#[B*N_C,1024,1]
         x_reg = F.relu(self.bn_reg3(self.conv_reg3(x_reg))) #[B*N_C,256,1]
         x_reg = self.bn_reg4(self.conv_reg4(x_reg))#[B*N_C,self.k_reg,1]
 
         #变形，将anchor显示表示出来，第二维度就是anchor的index
-        x_reg = x_reg.view(B,-1,self.k_reg_no_anchor)  #[B*N_C,anchor_number,self.k_reg_no_anchor]
+        x_reg = x_reg.view(B,-1,self.k_reg_no_anchor)  #[B*N_C,anchor_number,reg_channel]
         x_reg[:,:,7:] = self.sigmod(x_reg[:,:,7:])
         '''
         x_reg = x_reg.view(B,-1,7)

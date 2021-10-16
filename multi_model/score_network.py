@@ -16,6 +16,7 @@ class ScoreNetwork(nn.Module):
         super(ScoreNetwork, self).__init__()
         self.is_training = training
         self.k_obj = k_obj
+        #构建基于pointnet++的空网络模型，
         self.extrat_featurePN2 = PointNet2Seg(input_chann=6, k_score=1, k_obj=self.k_obj)
         self.criterion_cls = nn.NLLLoss(reduction='mean')
         self.criterion_reg = nn.MSELoss(reduction='mean')

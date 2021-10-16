@@ -17,12 +17,12 @@ def get_grasp_allobj(pc, predict_score, params, data_paths, use_theta=True):
       按照分数，从原始点云中，通过PFS算法（感觉实际上没有用这个）抽取出k个抓取中心
 
       Input:
-        pc             :[B,N,6]  input points  原始点云，咋是6维度的？（答：因为是xyzrgb，带有颜色（感觉没必要颜色））
+        pc             :[B,N,6]  6维度的原始点云
         predict_score  :[B,N]  每个点的预测分数
         params         :list [center_num(int), score_thre(float), group_num(int), r_time_group(float), group_num_more(int), \
                               r_time_group_more(float), width(float), height(float), depth(float)]
         data_paths     :list
-      Output返回值:
+      Output:
         center_pc           :[B, center_num, 6] 各抓取中心点的坐标&颜色
         center_pc_index     :[B, center_num] index of selected center in sampled points 各抓取中心点在原始点云中的索引
         pc_group            :[B, center_num, group_num, 6]  以各抓取中心点构造包围球，返回包围球内部所有点的坐标
@@ -42,18 +42,18 @@ def get_grasp_allobj(pc, predict_score, params, data_paths, use_theta=True):
 
     grasp_labels = None
     if len(data_paths) > 0:
-        #通过
+        #抽出了k1个点，查阅数据集，
         grasp_labels = _get_center_grasp(center_pc_index, center_pc, data_paths, depth, use_theta)
     return center_pc, center_pc_index, pc_group_index, pc_group, pc_group_more_index, pc_group_more, grasp_labels
 
 
 def _get_center_grasp(center_pc_index, center_pc, data_paths, depth, use_theta=True):
-    '''
-    这个函数是干啥的？
+    '''查阅样本数据集，为指定点分配groundtruth抓取以及对应的抓取分数
+    GRN之前，通过FPS抽出k1个点，该函数读取这些点的索引和位置，
       Input:
         center_pc_index: [B, center_num] 输入抓取中心点的索引
         center_pc:   [B, center_num, 6] x,y,z,r,g,b  抓取中心点的坐标，
-        data_paths:  list
+        data_paths:  list 当前batch的样本在数据集中的路径
         depth: 夹爪的深度
         use_theta:是否使用了
       Output:
@@ -62,12 +62,13 @@ def _get_center_grasp(center_pc_index, center_pc, data_paths, depth, use_theta=T
         or
         grasp_trans: [B, center_num, 13] (axis_x[3], axis_y[3], axis_z[3], center[3], score[1])
     '''
-    grasp_index = torch.full(center_pc_index.shape, -1)
-    grasp_label = torch.full((center_pc_index.shape[0], center_pc_index.shape[1], 3, 4), -1.0)
-    grasp_trans = torch.full((center_pc_index.shape[0], center_pc_index.shape[1], 13), -1.0)
-    grasp_score_label           = torch.full((center_pc_index.shape[0], center_pc_index.shape[1]), -1.0)
-    grasp_antipodal_score_label = torch.full((center_pc_index.shape[0], center_pc_index.shape[1]), -1.0)
-    grasp_center_score_label    = torch.full((center_pc_index.shape[0], center_pc_index.shape[1]), -1.0)
+    #创建
+    grasp_index = torch.full(center_pc_index.shape, -1)# [B, center_num] 填充-1
+    grasp_label = torch.full((center_pc_index.shape[0], center_pc_index.shape[1], 3, 4), -1.0)#[B, center_num,3,4] 填充-1.0 
+    grasp_trans = torch.full((center_pc_index.shape[0], center_pc_index.shape[1], 13), -1.0)#[B, center_num,13] 填充-1.0 
+    grasp_score_label           = torch.full((center_pc_index.shape[0], center_pc_index.shape[1]), -1.0)#[B, center_num] 填充-1.0 
+    grasp_antipodal_score_label = torch.full((center_pc_index.shape[0], center_pc_index.shape[1]), -1.0)#[B, center_num] 填充-1.0 
+    grasp_center_score_label    = torch.full((center_pc_index.shape[0], center_pc_index.shape[1]), -1.0)#[B, center_num] 填充-1.0 
     
     if center_pc_index.is_cuda:
         grasp_index, grasp_label, grasp_score_label = grasp_index.cuda(), grasp_label.cuda(), grasp_score_label.cuda()
@@ -75,14 +76,15 @@ def _get_center_grasp(center_pc_index, center_pc, data_paths, depth, use_theta=T
         data = np.load(data_paths[i], allow_pickle=True)
         if 'frame' in data.keys():
             grasp = torch.Tensor(data['frame'])
-            grasp_score =  torch.Tensor(data['antipodal_score'])
+            grasp_score =  torch.Tensor(data['antipodal_score'])#读取antipodal分数作为抓取分数
             grasp_antipodal_score = None
             if center_pc_index.is_cuda:
                 grasp, grasp_score = grasp.cuda(), grasp_score.cuda()
 
         else:
-            grasp                 = torch.Tensor(data['select_frame'])
-            grasp_score           = torch.Tensor(data['select_score']) / 3 if type(data['select_score']) is np.ndarray else data['select_score'] / 3
+            #读取当前帧样本点云中的所有候选抓取以及其他数据
+            grasp  = torch.Tensor(data['select_frame'])#当前样本点云中的所有候选抓取坐标系的4*4标准变换矩阵（每帧大约有1000+）
+            grasp_score  = torch.Tensor(data['select_score']) / 3 if type(data['select_score']) is np.ndarray else data['select_score'] / 3
             grasp_antipodal_score = torch.Tensor(data['select_antipodal_score']) if type(data['select_antipodal_score']) is np.ndarray else data['select_antipodal_score']
             grasp_center_score    = torch.Tensor(data['select_center_score']) if type(data['select_center_score']) is np.ndarray else data['select_center_score']
             grasp_vertical_score  = torch.Tensor(data['select_vertical_score']) if type(data['select_vertical_score']) is np.ndarray else data['select_vertical_score']
@@ -98,12 +100,14 @@ def _get_center_grasp(center_pc_index, center_pc, data_paths, depth, use_theta=T
         #grasp_score = grasp_score[grasp_select_inedx]
         #grasp = grasp[grasp_select_inedx]
 
-        grasp_center = grasp[:,:3,3]
-        grasp_x, grasp_y, grasp_z = grasp[:,:3,0], grasp[:,:3,1], grasp[:,:3,2]
-        grasp_center = (grasp_center + grasp_x * depth).float()
-        in_grasp_center = (grasp_center - grasp_x * depth).float()
+        grasp_center = grasp[:,:3,3]#当前点云所有典范抓取坐标系的bottom_center的xyz坐标
+        grasp_x, grasp_y, grasp_z = grasp[:,:3,0], grasp[:,:3,1], grasp[:,:3,2]#当前点云所有候选抓取的三个坐标轴
+        grasp_center = (grasp_center + grasp_x * depth).float()#当前点云所有典范抓取坐标系的grasp_center的xyz坐标
+        in_grasp_center = (grasp_center - grasp_x * depth).float()#?
+
+        #找到样本点云中与选出的k1个点距离最近的那些点
         distance = _compute_distance(center_pc[i], in_grasp_center)
-        distance_min = torch.min(distance, dim=1)
+        distance_min = torch.min(distance, dim=1)#
         distance_min_values, distance_min_index = distance_min[0], distance_min[1]
         #distance_min_index[distance_min_values > 0.015] = -1
 

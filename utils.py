@@ -25,13 +25,19 @@ from dataset_utils.eval_score.eval import eval_test, eval_validate
 def mkdir_output(base_path, tag, mode="train", log_flag=False):
     path = os.path.join(base_path, tag)
     if not os.path.exists(path):
-        os.mkdir(path)
+        os.makedirs(path)
 
     if log_flag:
         logger = SummaryWriter(path)
         return logger
       
 def get_dataset(all_points_num, base_path, tag="train", seed=1, width=None):
+    '''构建数据集可迭代对象
+    all_points_num  一帧点云的点数
+    base_path  文件夹地址
+    tag 模式标签
+    
+    '''
     dataset = ScoreDataset(
                 all_points_num = all_points_num,
                 path = base_path,
@@ -42,6 +48,8 @@ def get_dataset(all_points_num, base_path, tag="train", seed=1, width=None):
     return dataset
 
 def get_dataloader(dataset, batchsize, shuffle=True, num_workers=8, pin_memory=True):
+    '''构建dataloader
+    '''
     def my_worker_init_fn(pid):
         np.random.seed(torch.initial_seed() % (2**31-1))
     def my_collate(batch):
@@ -51,7 +59,7 @@ def get_dataloader(dataset, batchsize, shuffle=True, num_workers=8, pin_memory=T
     dataloader = torch.utils.data.DataLoader(
                     dataset,
                     batch_size=batchsize,
-                    num_workers=num_workers,
+                    num_workers=num_workers,#默认使用8个线程来导入数据
                     pin_memory=pin_memory,
                     shuffle=shuffle,
                     worker_init_fn=my_worker_init_fn,
@@ -60,12 +68,14 @@ def get_dataloader(dataset, batchsize, shuffle=True, num_workers=8, pin_memory=T
     return dataloader
 
 def construct_scorenet(load_flag, obj_class_num=2, model_path=None, gpu_num=0):
+    '''
+    实例化具体的SN网络对象，并根据具体的flag模式，选择返回空模型，还是已有的模型
+    '''
+    #实例化SN空模型对象
     score_model = ScoreNetwork(training=True, k_obj=obj_class_num)
-    '''
-    构建scorenet模型并返回
-    '''
 
     resume_num = 0
+    #如果选择加载已有的模型，就把训练好的模型参数填充到构件好的空模型中
     if load_flag and model_path is not '':
         model_dict = torch.load(model_path, map_location='cuda:{}'.format(gpu_num)).state_dict() #, map_location='cpu'
         new_model_dict = {}
@@ -73,20 +83,22 @@ def construct_scorenet(load_flag, obj_class_num=2, model_path=None, gpu_num=0):
             new_model_dict[key.replace("module.", "")] = model_dict[key]
         score_model.load_state_dict(new_model_dict)
         resume_num = 1+int(model_path.split('/')[-1].split('_')[1].split('.model')[0])
+    
     return score_model, resume_num
 
 def construct_rnet(load_flag, training_refine, group_num, 
             gripper_num, grasp_score_threshold, depth, reg_channel, model_path=None, gpu_num=0):
     """
-    构建GRN和RN (Optional)
-    training_refine: 是否一起构造后面RN
+    实例化具体的网络对象，并根据具体的flag模式，选择单独构建GRN网络，或者构建GRN_RN网络
     """
     #-------------- load region (refine) network----------------
+    #构建空的GRN/GRN_RN网络模型
     region_model = GripperRegionNetwork(training=training_refine, group_num=group_num, \
         gripper_num=gripper_num, grasp_score_threshold=grasp_score_threshold, radius=depth, reg_channel=reg_channel)
     
     resume_num = 0
 
+    #如果选择加载已有的模型，就把存在的模型参数填充到构件好的空模型中
     if load_flag and model_path is not '':
         cur_dict = region_model.state_dict()                                        
         model_dict = torch.load(model_path, map_location='cuda:{}'.format(gpu_num)).state_dict()
@@ -103,32 +115,29 @@ def construct_rnet(load_flag, training_refine, group_num,
 def construct_net(params, mode, gpu_num=0, load_score_flag=True, 
                                 score_path=None, load_rnet_flag=True, rnet_path=None):
     """
-    使用这个函数，构建一些函数
-    params:[obj_class_num, group_num, gripper_num, grasp_score_threshold, depth, reg_channel]
-    mode : ['train', 'pretrain_score', 'pretrain_region', 'validate', 'validate_score', 'validate_region', 'test', 'test_score', 'test_region']
-    gpu_num: GPU数量
-
+    根据模式，调用不同的子函数，构建不同的网络结构
     """
 
     obj_class_num, group_num, gripper_num, grasp_score_threshold, depth, reg_channel = params
     if 'validate' in mode or 'test' in mode or mode == 'train':
         load_score_flag, load_rnet_flag = True, True
     elif mode == 'pretrain_region':
-        #只是预训练SN的时候，只把SN标志置1
-        load_score_flag = True
-    #构建SN网络
+        load_score_flag = True#预训练GRN时，需要先加载前半段训练好的SN 网络
+
+   
     score_model, score_resume = construct_scorenet(load_score_flag, obj_class_num, 
-                                                        score_path, gpu_num)
-    if 'score' in mode:
+                                                        score_path, gpu_num) #构建SN网络对象（根据flag选择是否直接读取已有的网络）
+    if 'score' in mode:#如果是"pretrain_score"模式
         return score_model, None, score_resume
-    elif 'region' in mode:
-        training_refine = False
-    else:
-        #是否连带训练RN
+    elif 'region' in mode:#如果是"pretrain_region"模式（要求仅仅训练GRN）
+        training_refine = False#设置禁止训练RN
+    else:#如果是"train"模式
         training_refine = True
-    #构建GRN网络
+
+    #构建GRN/GRN_RN网络对象（根据flag选择是否直接读取已有的网络）
     region_model, rnet_resume = construct_rnet(load_rnet_flag, training_refine, group_num, 
                     gripper_num, grasp_score_threshold, depth, reg_channel, rnet_path, gpu_num)
+
     if mode == "train" and 'pretrain' in rnet_path.split('/')[-1]:
         rnet_resume = 0
     return score_model, region_model, rnet_resume
