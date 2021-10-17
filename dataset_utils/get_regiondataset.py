@@ -60,7 +60,7 @@ def _get_center_grasp(center_pc_index, center_pc, data_paths, depth, use_theta=T
         输出的这个是啥？
         grasp_trans: [B, center_num, 8] (center[3], axis_y[3], grasp_angle[1], score[1])
         or
-        grasp_trans: [B, center_num, 13] (axis_x[3], axis_y[3], axis_z[3], center[3], score[1])
+        grasp_trans: [B, center_num, 10] (axis_x[3], axis_y[3], axis_z[3], center[3], score[1])
     '''
     #创建
     grasp_index = torch.full(center_pc_index.shape, -1)# [B, center_num] 填充-1
@@ -100,33 +100,33 @@ def _get_center_grasp(center_pc_index, center_pc, data_paths, depth, use_theta=T
         #grasp_score = grasp_score[grasp_select_inedx]
         #grasp = grasp[grasp_select_inedx]
 
-        grasp_center = grasp[:,:3,3]#当前点云所有典范抓取坐标系的bottom_center的xyz坐标
+        grasp_center = grasp[:,:3,3]#当前点云所有典范抓取坐标系的bottom_center的xyz坐标[B*center_num,3]
         grasp_x, grasp_y, grasp_z = grasp[:,:3,0], grasp[:,:3,1], grasp[:,:3,2]#当前点云所有候选抓取的三个坐标轴
         grasp_center = (grasp_center + grasp_x * depth).float()#当前点云所有典范抓取坐标系的grasp_center的xyz坐标
         in_grasp_center = (grasp_center - grasp_x * depth).float()#?
 
         #找到样本点云中与选出的k1个点距离最近的那些点
-        distance = _compute_distance(center_pc[i], in_grasp_center)
+        distance = _compute_distance(center_pc[i], in_grasp_center)#先计算每个点与数据集的距离
         distance_min = torch.min(distance, dim=1)#
-        distance_min_values, distance_min_index = distance_min[0], distance_min[1]
+        distance_min_values, distance_min_index = distance_min[0], distance_min[1]#[center_num,]
         #distance_min_index[distance_min_values > 0.015] = -1
 
-        grasp_index[i] = distance_min_index
-        grasp_label[i] = grasp[distance_min_index,:3,:4]
-        grasp_score_label[i]           = grasp_score[distance_min_index]
+        grasp_index[i] = distance_min_index#k1个抓取点中每个抓取点与样本集中最近的抓取的索引，一共也是k1个
+        grasp_label[i] = grasp[distance_min_index,:3,:4]#k1个最近抓取的三个抓取轴以及中心点坐标
+        grasp_score_label[i]           = grasp_score[distance_min_index]#k1个最近groundtruth抓取的分数
         if grasp_antipodal_score is not None:
-            grasp_antipodal_score_label[i] = grasp_antipodal_score[distance_min_index]
+            grasp_antipodal_score_label[i] = grasp_antipodal_score[distance_min_index]#也记录下k1个最近ground truth的antipodal分数
             grasp_center_score_label[i]    = grasp_center_score[distance_min_index]
         
-        no_grasp_mask = (distance_min_values > 0.005)
-        grasp_index[i][no_grasp_mask] = -1
-        grasp_label[i][no_grasp_mask] = -1
-        grasp_score_label[i][no_grasp_mask]           = -1
+        no_grasp_mask = (distance_min_values > 0.005)#如果在样本中与某点的最近抓取距离还大于5mm，
+        grasp_index[i][no_grasp_mask] = -1#将该点对应的最近抓取的索引记为-1
+        grasp_label[i][no_grasp_mask] = -1#最近抓取的三个抓取轴以及中心点坐标也设置为-1
+        grasp_score_label[i][no_grasp_mask]           = -1#分数也都是-1
         if grasp_antipodal_score is not None:
             grasp_antipodal_score_label[i][no_grasp_mask] = -1
             grasp_center_score_label[i][no_grasp_mask]    = -1
     
-    if use_theta:
+    if use_theta:#如果使用了theta值
         grasp_trans = _transform_grasp(grasp_label, grasp_score_label, grasp_antipodal_score_label, grasp_center_score_label)
         # test whether the grasp transformed right
         ##grasp_label, grasp_score_label = _inv_transform_grasp(grasp_trans)
@@ -142,29 +142,31 @@ def _get_center_grasp(center_pc_index, center_pc, data_paths, depth, use_theta=T
     return grasp_trans
 
 def _transform_grasp(grasp_ori, grasp_score_ori, antipodal_score_ori, center_score_ori):
-    '''
+    '''计算拼接groundtruth抓取向量并返回
       Input:
-        grasp_ori: [B, center_num, 3, 4] 
+        grasp_ori: [B, center_num, 3, 4] 抓取的位置姿态
                    [[x1, y1, z1, c1],
                     [x2, y2, z2, c2],
                     [x3, y3, z3, c3]]
-        grasp_score_ori: [B, center_num]
+        grasp_score_ori: [B, center_num]#分数
       Output:
         grasp_trans:[B, center_num, 8] (center[3], axis_y[3], grasp_angle[1], score[1])
     '''
     B, CN = grasp_score_ori.shape
+    #如果数据集中没有 antipodal_score
     if torch.sum(antipodal_score_ori == -1) == antipodal_score_ori.shape[0] * antipodal_score_ori.shape[1]:
-        grasp_trans = torch.full((B, CN, 8), -1.0)
+        grasp_trans = torch.full((B, CN, 8), -1.0)#就只记录基于score= cos_alpha1*cos_alpha2的分数
     else:
-        grasp_trans = torch.full((B, CN, 10), -1.0)
+        grasp_trans = torch.full((B, CN, 10), -1.0)#否则都记录下来
 
+    #ground truth抓取三坐标轴
     axis_x = grasp_ori[:,:,:3,0].view(B*CN, 3)
     axis_y = grasp_ori[:,:,:3,1].view(B*CN, 3)
     axis_z = grasp_ori[:,:,:3,2].view(B*CN, 3)
 
 
     no_grasp_mask = ((axis_x[:,0]==-1) & (axis_x[:,1]==-1) & (axis_x[:,2]==-1))
-
+    #计算ground truth的theta值
     grasp_angle = torch.atan2(axis_x[:,2], axis_z[:,2])  ## torch.atan(torch.div(axis_x[:,2], axis_z[:,2])) is not OK!!!
 
 
@@ -277,6 +279,8 @@ def _inv_transform_grasp(grasp_trans):
     return matrix, grasp_score_ori
 
 def _compute_distance(points1, points2):
+    '''计算点
+    '''
     #distance [len(points1), len(points2)]
     distance = -2 * points1[:, :3].mm(points2.transpose(1,0))
     distance += torch.sum(points2.mul(points2), 1).view(1,-1).repeat(points1.size()[0],1)

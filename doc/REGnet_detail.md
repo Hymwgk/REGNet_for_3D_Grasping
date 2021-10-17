@@ -97,6 +97,89 @@ x_cls, x_reg, mp_center_feature = self.extrat_feature_region(pc_group_features.p
 
 
 
+## 如何为GRN网络制作ground truth
+
+ground truth不等同于数据集，ground truth只是数据集中的某些值；ground truth不一定都是正抓取，有可能是负抓取。
+
+![image-20211017091309289](REGnet_detail.assets/image-20211017091309289.png)
+
+问题：
+
+选定了k1个抓取点之后，这k1个点将会作为抓取中心点进一步回归出最终的候选抓取，那么如何为这k1个抓取点计算分配对应的ground truth抓取呢？
+
+如果k1个抓取点附近没有groundtruth抓取怎么办呢？
+
+如果这k1个抓取点对应的ground truth抓取分数很低，是非法抓取怎么办呢？需要处理么？允许在数据集中存在这样低的抓取么？
+
+思路：
+
+并不是给定的样本中只有k1个点，并且k1个点对应的位置姿态是确定的，网络必须回归出这k1个点坐标与抓取姿态分数，然后记录loss
+
+而是样本有多个点，从中挑出与k1最近的ground truth抓取，
+
+
+
+样本不是说，我只有这么多个东西，网络你只能按照我给定的东西走
+
+而是，网络你可以回归出一些点，你可以回归，我根据你出来的值，去数据集中查查，根据你的值查查看是不是正确的
+
+![image-20211017214112816](REGnet_detail.assets/image-20211017214112816.png)
+
+
+
+这个选点、分配ground truth抓取算法的实现函数为：
+
+```python
+def get_grasp_allobj(pc, predict_score, params, data_paths, use_theta=True):
+```
+
+假设当前点云通过Antipodal计算，得到了1000个ground truth候选抓取；通过算法筛选到一共有k1个候选抓取中心点；
+
+1. 计算k1中每个点与1000个抓取中心的距离distance，形状是[k1,1000] 
+2. 根据距离找到k1中每个点与哪个点的中心点距离最近，记录下那些groundtruth抓取中心点的编号
+3. 利用这些最近抓取中心点的编号，筛选出最近抓取的位置姿态以及分数
+4. 如果某点与最近抓取中心点的距离大于5mm，就认为该FPS选点没有合法抓取，位姿、分数、等都设置为-1，例如图中$P_1,P_2$ 点处，在数据集中没有找到与之距离为5mm之内的抓取，但是它们同样会给出一个抓取，但是所有值都被置为-1，代表该处没有合理抓取。
+5. 根据上面的抓取位置姿态和分数，返回ground truth抓取向量
+
+
+
+REGnet代码中，可选的groundtruth抓取向量有两种，8维度向量与10维度抓取向量
+
+```python
+#8维度
+grasp_labels        :[B, center_num, 8] the labels of grasps (center[3], axis_y[3], grasp_angle[1], grasp_score[1])
+#10维度
+grasp_labels        :[B, center_num, 8] the labels of grasps (center[3], axis_y[3], grasp_angle[1], grasp_score[1],antipodal_score[1],center_score[1])
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+如何知道ground truth抓取，与哪个预设anchor比较近呢？在哪里实现的？感觉是在Loss计算函数中计算的。
+
+
+
+
+
+
+
+
+
+
+
 
 
 

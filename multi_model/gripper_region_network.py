@@ -68,7 +68,7 @@ class GripperRegionNetwork(nn.Module):
         return t_anchors
 
     def compute_loss(self, first_grasp, anchors, first_cls, ground):
-        '''在训练时，计算回归出的anchors和ground truth之间的差别loss
+        '''在训练时，计算回归出的抓取和ground truth抓取之间的差别loss
         Input:  
             first_grasp : [B*center_num, num_anchor, 8]  回归出的残差+score
             anchors     : [B*center_num, num_anchor, 7]    anchors
@@ -88,8 +88,8 @@ class GripperRegionNetwork(nn.Module):
         BmulN_C = len(first_grasp) #一个batch中有多少个抓取中心
         # B, N_C = ground.shape[0], ground.shape[1]
         if ground is not None:#训练时
-            #gmask是1维的， len(gmask)是groudtruth中带有正抓取的抓取中心点的数量，内部值是该抓取中心点的索引
-            #例如[0,1,3,5,6,7] 表明groundtruth在第0，1，3，5，7号抓取中心点具有正抓取
+            #筛选出带有正抓取的index
+            #例如gmask=[0,1,3,5,6,7] 表明在第0，1，3，5，7号抓取中心点处可以在数据集中查找到合理的抓取
             gmask = torch.nonzero(ground.view(-1,ground.shape[2])[:,-1] != -1).view(-1) #gmask[B*center_num, 1]
             print(BmulN_C, "centers has", len(gmask), "grasps" )              
         else:#测试时
