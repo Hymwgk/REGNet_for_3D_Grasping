@@ -135,9 +135,9 @@ val_score_dataset = utils.get_dataset(all_points_num, args.data_path, "validate"
 test_score_dataset = utils.get_dataset(all_points_num, args.data_path, "test", 1, width)     #Test
 
 #构造dataloader
-train_score_loader = utils.get_dataloader(train_score_dataset, args.batch_size,num_workers=1, shuffle=True)#测试时使用单线程导入数据
-val_score_loader   = utils.get_dataloader(val_score_dataset, 1,num_workers=1, shuffle=True)
-test_score_loader  = utils.get_dataloader(test_score_dataset, 1,num_workers=1, shuffle=False)
+train_score_loader = utils.get_dataloader(train_score_dataset, args.batch_size,num_workers=8, shuffle=True)#测试时使用单线程导入数据
+val_score_loader   = utils.get_dataloader(val_score_dataset, 1,num_workers=8, shuffle=True)
+test_score_loader  = utils.get_dataloader(test_score_dataset, 1,num_workers=8, shuffle=False)
 #==========================
 #构建模型
 score_model, region_model, resume_epoch = utils.construct_net(model_params, args.mode, gpu_num=args.gpu, 
@@ -331,7 +331,7 @@ class RegionModule():
             '''训练SN子网络
             all_feature: [B, N, C(512)]猜测是PointNet2对全部点变换的特征
             output_score: [B, N]猜测是对全部点预测的分数
-            loss:  是该子网络的损失
+            loss:  SN子网络的损失
             '''
             all_feature, output_score, loss = score_model(pc, pc_score, pc_label)
 
@@ -349,13 +349,13 @@ class RegionModule():
                     grasp_labels = get_grasp_allobj(pc, output_score, self.params, data_path, use_theta)
 
 
-            '''训练GRN子网络            
+            '''训练GRN子网络     
             '''
             grasp_stage2, keep_grasp_num_stage2, stage2_mask, loss_tuple, correct_tuple, next_gt, _, _, _, _, _, _, _, _, _, _, = \
                             region_model(pc_group, pc_group_more, pc_group_index, pc_group_more_index, center_pc,\
                             center_pc_index, pc, all_feature, self.gripper_params, grasp_labels, data_path)
             
-            #将两个loss进行叠加
+            #将SN的Loss与GRN的Loss（可能还有RN的Loss）进行叠加
             loss_total = (loss.sum() + loss_tuple[0].sum())  
             pre_loss1 += loss_tuple[6].mean() 
             pre_loss2 += loss_tuple[7].mean() 
