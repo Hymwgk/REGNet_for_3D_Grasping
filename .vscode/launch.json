@@ -1,0 +1,75 @@
+{
+    // 使用 IntelliSense 了解相关属性。 
+    // 悬停以查看现有属性的描述。
+    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "pretrain_score",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/train.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--data-path",
+                "/home/wgk/dataset/REGnet",
+                "--gpu",
+                "0",
+                "--gpu-num",
+                "1",
+                "--batch-size",
+                "3",
+                "--mode",
+                "pretrain_score",
+                "--tag",
+                "regnet_score",
+                "--cuda"
+            ]
+        },
+        {
+            "name": "pretrain_region",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/train.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--data-path",
+                "/home/wgk/dataset/REGnet",
+                "--gpu",
+                "0",
+                "--gpu-num",
+                "1",
+                "--batch-size",
+                "3",
+                "--mode",
+                "pretrain_region",
+                "--tag",
+                "regnet_region",
+                "--cuda"
+            ]
+        },
+        {
+            "name": "train",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/train.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--data-path",
+                "/home/wgk/dataset/REGnet",
+                "--gpu",
+                "0",
+                "--gpu-num",
+                "1",
+                "--batch-size",
+                "3",
+                "--mode",
+                "train",
+                "--tag",
+                "train",
+                "--cuda"
+            ]
+        }
+
+    ]
+}

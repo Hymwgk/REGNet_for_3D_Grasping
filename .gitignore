@@ -5,8 +5,6 @@ __pycache__/
 
 # C extensions
 *.so
-
-.vscode
 log
 assets/models/*0*
 assets/models/*15*
