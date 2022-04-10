@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import argparse
 import os
 import pickle
@@ -33,7 +34,7 @@ parser.add_argument('--epoch', type=int, default=101)
 #- validate 对整体的网络进行验证？
 #- validate_score 单独对scorenet进行验证
 #- validate_region 单独对region net进行验证
-#- test 和validate有啥区别？
+
 parser.add_argument('--mode', choices=['train', 'pretrain_score', 'pretrain_region', 'validate', 'validate_score',
                                         'validate_region', 'test', 'test_score', 'test_region'], required=True)
 #设定batch size 默认是15
@@ -43,7 +44,7 @@ parser.add_argument('--num-refine', type=int, default=0, help='number of interat
 #
 parser.add_argument('--cuda', action='store_true')
 #指定训练使用的显卡的数量
-parser.add_argument('--gpu-num', type=int, default=2)
+parser.add_argument('--gpu-num', type=int, default=1)
 #指定使用个显卡（当只是用一个显卡时候用这个）
 parser.add_argument('--gpu', type=int, default=0)
 #指定使用的显卡的编号
@@ -52,9 +53,9 @@ parser.add_argument('--gpus', type=str, default='0,2,3')
 parser.add_argument('--lr-score' , type=float, default=0.0001) #0.001
 #指定regionnet的学习率
 parser.add_argument('--lr-region', type=float, default=0.0001)
-#加载与训练的scorenet的地址
+#加载预训练的scorenet网络参数位置
 parser.add_argument('--load-score-path', type=str, default='/home/wgk/code/REGNet_for_3D_Grasping/assets/models/final/score_20.model')
-#加载regionnet的地址
+#加载预训练的regionnet网络参数位置
 parser.add_argument('--load-region-path', type=str, default='/home/wgk/code/REGNet_for_3D_Grasping/assets/models/final/region_20.model')
 #parser.add_argument('--load-score-path', type=str, default='')
 # parser.add_argument('--load-region-path', type=str, default='')
@@ -65,7 +66,7 @@ parser.add_argument('--load-region-flag', type=bool, default=False)
 
 parser.add_argument('--use-multi', type=bool, default=False)
 parser.add_argument('--data-path', type=str, default='/home/wgk/dataset/REGnet', help='data path')
-
+#训练好的模型存在哪里
 parser.add_argument('--model-path', type=str, default='/home/wgk/code/REGNet_for_3D_Grasping/assets/models/', help='to saved model path')
 parser.add_argument('--log-path', type=str, default='/home/wgk/code/REGNet_for_3D_Grasping/assets/log/', help='to saved log path')
 parser.add_argument('--folder-name', type=str, default='/home/wgk/code/REGNet_for_3D_Grasping/test_file/real_data')
@@ -90,6 +91,7 @@ if args.mode == 'test' or args.mode == 'validate':
 logger = utils.mkdir_output(args.log_path, args.tag, args.mode, log_flag=True)
 utils.mkdir_output(args.model_path, args.tag)
 
+#指定输入的一帧场景点云的点数是多少
 all_points_num = 25600
 obj_class_num = 43
 
@@ -420,7 +422,7 @@ class RegionModule():
         print("---------------validate_score epoch", epoch, "------------------")
         self.validate_region(epoch)
 
-    def test(self):
+    def test(self,epoch):
         print("---------------DATALOADER: test_score epoch", epoch, "------------------")
         self.test_region(epoch)
 
